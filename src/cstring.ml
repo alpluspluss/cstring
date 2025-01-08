@@ -1,247 +1,247 @@
-let ones = lnot 0 / 0xFF
-let highs = ones * 0x80
+let ones = Int64.div (Int64.lognot 0L) 0xFFL
+let highs = Int64.mul ones 0x80L
 
-let has_zero x = ((x - ones) land (lnot x) land highs) <> 0
+let[@inline] has_zero x = Int64.logand (Int64.logand (Int64.sub x ones) (Int64.lognot x)) highs <> 0L
 
-let to_lower c = Char.chr ((Char.code c) lor 0x20)
+let[@inline] to_lower c = Char.unsafe_chr (Char.code c lor 0x20)
 
-let rec strlen_aux s i = 
-   match i < String.length s with
-   | false -> i
-   | true -> match s.[i] with
-      | '\000' -> i
-      | _ -> strlen_aux s (i + 1)
+let strlen s =
+  let len = String.length s in
+  let rec find i =
+    if i >= len || String.unsafe_get s i = '\000' then i
+    else find (i + 1)
+  in find 0
 
-let strlen s = strlen_aux s 0
+let strnlen s max =
+  let len = String.length s in
+  let rec find i =
+    if i >= len || i >= max || String.unsafe_get s i = '\000' then i
+    else find (i + 1)
+  in find 0
 
-let rec strnlen_aux s i max = 
-   match i, max with
-   | i, 0 -> i
-   | i, _ when i >= String.length s -> i
-   | i, max -> match s.[i] with
-      | '\000' -> i
-      | _ -> strnlen_aux s (i + 1) (max - 1)
-
-let strnlen s max = strnlen_aux s 0 max
-
-let rec strcpy_aux dst src i =
-   match i < String.length src with
-   | false -> dst
-   | true -> match src.[i] with
-      | '\000' -> dst
-      | c -> 
-         let _ = Bytes.set dst i c in 
-         strcpy_aux dst src (i + 1)
+let[@inline] copy_chunk src src_pos dst dst_pos =
+  let s = String.get_int64_ne src src_pos in
+  Bytes.set_int64_ne dst dst_pos s
 
 let strcpy src =
-   let len = strlen src in
-   let dst = Bytes.create len in
-   Bytes.unsafe_to_string (strcpy_aux dst src 0)
-
-let rec fill_zeros dst start n =
-   match n with
-   | 0 -> dst
-   | n -> 
-      let _ = Bytes.set dst start '\000' in
-      fill_zeros dst (start + 1) (n - 1)
-
-let rec strncpy_aux dst src i n = 
-   match i, n with
-   | _, 0 -> dst
-   | i, n when i >= String.length src -> fill_zeros dst i n
-   | i, n -> 
-      let _ = Bytes.set dst i src.[i] in
-      strncpy_aux dst src (i + 1) (n - 1)
+  let src_len = strlen src in
+  let dst = Bytes.create src_len in
+  let rec copy_by_chunk i =
+    if i + 8 <= src_len then begin
+      copy_chunk src i dst i;
+      copy_by_chunk (i + 8)
+    end else
+      for j = i to src_len - 1 do
+        Bytes.unsafe_set dst j (String.unsafe_get src j)
+      done
+  in
+  copy_by_chunk 0;
+  Bytes.unsafe_to_string dst
 
 let strncpy src n =
-   let dst = Bytes.create n in
-   Bytes.unsafe_to_string (strncpy_aux dst src 0 n)
+  let src_len = min (strlen src) n in
+  let dst = Bytes.create n in
+  let rec copy i =
+    if i >= n then dst
+    else if i >= src_len then begin
+      Bytes.unsafe_set dst i '\000';
+      copy (i + 1)
+    end else begin
+      Bytes.unsafe_set dst i (String.unsafe_get src i);
+      copy (i + 1)
+    end
+  in
+  Bytes.unsafe_to_string (copy 0)
 
-let rec strcmp_aux s1 s2 i = 
-   let get_char s i = 
-      match i >= String.length s with
-      | true -> '\000'
-      | false -> s.[i]
-   in
-   match get_char s1 i, get_char s2 i with
-   | '\000', '\000' -> 0
-   | c1, c2 when c1 = c2 -> strcmp_aux s1 s2 (i + 1)
-   | c1, c2 -> Char.code c1 - Char.code c2
+let strcmp s1 s2 =
+  let len1, len2 = String.length s1, String.length s2 in
+  let rec compare_chunks i =
+    if i + 8 <= min len1 len2 then
+      let chunk1 = String.get_int64_ne s1 i in
+      let chunk2 = String.get_int64_ne s2 i in
+      if chunk1 = chunk2 then compare_chunks (i + 8)
+      else Int64.to_int (Int64.sub chunk1 chunk2)
+    else compare_bytes i
+  and compare_bytes i =
+    if i >= len1 then
+      if i >= len2 then 0
+      else ~-1
+    else if i >= len2 then 1
+    else
+      let c1 = String.unsafe_get s1 i in
+      let c2 = String.unsafe_get s2 i in
+      if c1 = c2 then compare_bytes (i + 1)
+      else Char.code c1 - Char.code c2
+  in
+  compare_chunks 0
 
-let strcmp s1 s2 = strcmp_aux s1 s2 0
+let strncmp s1 s2 n =
+  let len1, len2 = min (String.length s1) n, min (String.length s2) n in
+  let rec compare i =
+    if i >= n then 0
+    else if i >= len1 then
+      if i >= len2 then 0
+      else ~-1
+    else if i >= len2 then 1
+    else
+      let c1 = String.unsafe_get s1 i in
+      let c2 = String.unsafe_get s2 i in
+      if c1 = c2 then compare (i + 1)
+      else Char.code c1 - Char.code c2
+  in compare 0
 
-let rec strncmp_aux s1 s2 i n = 
-   match i, n with
-   | _, 0 -> 0
-   | i, n -> 
-      let c1 = match i >= String.length s1 with
-         | true -> '\000'
-         | false -> s1.[i]
-      in
-      let c2 = match i >= String.length s2 with
-         | true -> '\000'
-         | false -> s2.[i]
-      in
-      match c1, c2 with
-      | '\000', '\000' -> 0
-      | c1, c2 when c1 = c2 -> strncmp_aux s1 s2 (i + 1) (n - 1)
-      | c1, c2 -> Char.code c1 - Char.code c2
+let lowercase_table = Array.init 256 (fun i -> 
+  if i >= 65 && i <= 90 then Char.chr (i + 32) else Char.chr i)
 
-let strncmp s1 s2 n = strncmp_aux s1 s2 0 n
+let strcasecmp s1 s2 =
+  let len1, len2 = String.length s1, String.length s2 in
+  let rec compare i =
+    if i >= len1 then
+      if i >= len2 then 0
+      else ~-1
+    else if i >= len2 then 1
+    else
+      let c1 = lowercase_table.(Char.code (String.unsafe_get s1 i)) in
+      let c2 = lowercase_table.(Char.code (String.unsafe_get s2 i)) in
+      if c1 = c2 then compare (i + 1)
+      else Char.code c1 - Char.code c2
+  in compare 0
 
-let rec strcasecmp_aux s1 s2 i = 
-   let get_char s i = 
-      match i >= String.length s with
-      | true -> '\000'
-      | false -> to_lower s.[i]
-   in
-   match get_char s1 i, get_char s2 i with
-   | '\000', '\000' -> 0
-   | c1, c2 when c1 = c2 -> strcasecmp_aux s1 s2 (i + 1)
-   | c1, c2 -> Char.code c1 - Char.code c2
+let strncasecmp s1 s2 n =
+  let len1, len2 = min (String.length s1) n, min (String.length s2) n in
+  let rec compare i =
+    if i >= n then 0
+    else if i >= len1 then
+      if i >= len2 then 0
+      else ~-1
+    else if i >= len2 then 1
+    else
+      let c1 = lowercase_table.(Char.code (String.unsafe_get s1 i)) in
+      let c2 = lowercase_table.(Char.code (String.unsafe_get s2 i)) in
+      if c1 = c2 then compare (i + 1)
+      else Char.code c1 - Char.code c2
+  in compare 0
 
-let strcasecmp s1 s2 = strcasecmp_aux s1 s2 0
+let strchr s c =
+  let c = Char.chr (c land 0xFF) in
+  let len = String.length s in
+  let rec find i =
+    if i >= len then
+      if c = '\000' then Some "" else None
+    else
+      let curr = String.unsafe_get s i in
+      if curr = c then Some (String.sub s i (len - i))
+      else if curr = '\000' then
+        if c = '\000' then Some "" else None
+      else find (i + 1)
+  in find 0
 
-let rec strncasecmp_aux s1 s2 i n = 
-   match i, n with
-   | _, 0 -> 0
-   | i, n -> 
-      let c1 = match i >= String.length s1 with
-         | true -> '\000'
-         | false -> to_lower s1.[i]
-      in
-      let c2 = match i >= String.length s2 with
-         | true -> '\000'
-         | false -> to_lower s2.[i]
-      in
-      match c1, c2 with
-      | '\000', '\000' -> 0
-      | c1, c2 when c1 = c2 -> strncasecmp_aux s1 s2 (i + 1) (n - 1)
-      | c1, c2 -> Char.code c1 - Char.code c2
+let strrchr s c =
+  let c = Char.chr (c land 0xFF) in
+  let len = String.length s in
+  let rec find i last =
+    if i >= len then
+      match last with
+      | Some pos -> Some (String.sub s pos (len - pos))
+      | None -> if c = '\000' then Some "" else None
+    else
+      let curr = String.unsafe_get s i in
+      if curr = '\000' then
+        match last with
+        | Some pos -> Some (String.sub s pos (len - pos))
+        | None -> if c = '\000' then Some "" else None
+      else if curr = c then
+        find (i + 1) (Some i)
+      else
+        find (i + 1) last
+  in find 0 None
 
-let strncasecmp s1 s2 n = strncasecmp_aux s1 s2 0 n
+let strstr haystack needle =
+  if needle = "" then Some haystack else
+  let h_len = String.length haystack in
+  let n_len = String.length needle in
+  if n_len > h_len then None else
+  let first = String.unsafe_get needle 0 in
+  let last = String.unsafe_get needle (n_len - 1) in
+  let rec search i =
+    if i > h_len - n_len then None
+    else if String.unsafe_get haystack i <> first ||
+            String.unsafe_get haystack (i + n_len - 1) <> last then
+      search (i + 1)
+    else
+      let rec check j =
+        if j >= n_len - 1 then Some (String.sub haystack i (h_len - i))
+        else if String.unsafe_get haystack (i + j) <> String.unsafe_get needle j then
+          search (i + 1)
+        else check (j + 1)
+      in check 1
+  in search 0
 
-let rec strchr_aux s c i = 
-   match i < String.length s with
-   | false -> if c = '\000' then Some "" else None
-   | true -> match s.[i] with
-      | c' when c' = c -> Some (String.sub s i (String.length s - i))
-      | '\000' -> if c = '\000' then Some "" else None
-      | _ -> strchr_aux s c (i + 1)
-      
+let strnstr s1 s2 len =
+  if s2 = "" then Some s1 else
+  let len1 = min (String.length s1) len in
+  let len2 = String.length s2 in
+  if len2 > len1 then None else
+  let first = String.unsafe_get s2 0 in
+  let last = String.unsafe_get s2 (len2 - 1) in
+  let rec search i =
+    if i > len1 - len2 then None
+    else if String.unsafe_get s1 i <> first ||
+            String.unsafe_get s1 (i + len2 - 1) <> last then
+      search (i + 1)
+    else
+      let rec check j =
+        if j >= len2 - 1 then Some (String.sub s1 i (len1 - i))
+        else if String.unsafe_get s1 (i + j) <> String.unsafe_get s2 j then
+          search (i + 1)
+        else check (j + 1)
+      in check 1
+  in search 0
 
-let strchr s c = strchr_aux s (Char.chr (c land 0xFF)) 0
+(* String concatenation operations *)
+let[@inline] copy_string dst start src len =
+  for i = 0 to len - 1 do
+    Bytes.unsafe_set dst (start + i) (String.unsafe_get src i)
+  done
 
-let rec strrchr_aux s c i last = 
-   match i < String.length s with
-   | true -> (match s.[i] with
-      | '\000' -> strrchr_aux s c (i + 1) last
-      | c' when c' = c -> strrchr_aux s c (i + 1) (Some i)
-      | _ -> strrchr_aux s c (i + 1) last)
-   | false -> (match last with
-      | Some pos -> Some (String.sub s pos (String.length s - pos))
-      | None -> if c = '\000' then Some "" else None)
+let strcat s1 s2 =
+  let len1 = strlen s1 in
+  let len2 = strlen s2 in
+  let result = Bytes.create (len1 + len2) in
+  copy_string result 0 s1 len1;
+  copy_string result len1 s2 len2;
+  Bytes.unsafe_to_string result
 
-let strrchr s c = strrchr_aux s (Char.chr (c land 0xFF)) 0 None
-
-let rec check_match haystack needle i j =
-   match j with
-   | j when j >= String.length needle -> true
-   | j when i + j >= String.length haystack -> false
-   | j -> match haystack.[i + j] = needle.[j] with
-      | false -> false
-      | true -> check_match haystack needle i (j + 1)
-
-let rec strstr_aux haystack needle i =
-   match String.length needle with
-   | 0 -> Some haystack
-   | _ -> match i >= String.length haystack with
-      | true -> None
-      | false -> match haystack.[i] with
-         | '\000' -> None
-         | _ -> match check_match haystack needle i 0 with
-            | true -> Some (String.sub haystack i (String.length haystack - i))
-            | false -> strstr_aux haystack needle (i + 1)
-
-let strstr haystack needle = strstr_aux haystack needle 0
-
-let rec copy_string result start s len i =
-   match i with
-   | i when i >= len -> ()
-   | i -> 
-      let _ = Bytes.set result (start + i) s.[i] in
-      copy_string result start s len (i + 1)
-
-let strcat dst src =
-   let dst_len = strlen dst in
-   let src_len = strlen src in
-   let result = Bytes.create (dst_len + src_len + 1) in
-   let _ = copy_string result 0 dst dst_len 0 in
-   let _ = copy_string result dst_len src src_len 0 in
-   let _ = Bytes.set result (dst_len + src_len) '\000' in
-   Bytes.unsafe_to_string result
-
-let rec strncat_aux dst src i n = 
-   match i, n with
-   | _, 0 -> dst
-   | i, n -> match src.[i] with
-      | '\000' -> dst
-      | c -> 
-         let _ = Bytes.set dst i c in 
-         strncat_aux dst src (i + 1) (n - 1)
-
-let strncat dst src n =
-   let dst_len = strlen dst in
-   let src_len = min (strlen src) n in
-   let result = Bytes.create (dst_len + src_len + 1) in
-   let _ = copy_string result 0 dst dst_len 0 in
-   let _ = copy_string result dst_len src src_len 0 in
-   let _ = Bytes.set result (dst_len + src_len) '\000' in
-   Bytes.unsafe_to_string result
-
-let rec strlcat_aux dst src dst_len maxlen i =
-   match maxlen - dst_len, i with
-   | 0, _ -> dst_len + strlen src
-   | n, i -> match i >= String.length src with
-      | true -> dst_len + i
-      | false -> match src.[i] with
-         | '\000' -> dst_len + i
-         | c -> 
-            let _ = Bytes.set dst (dst_len + i) c in
-            strlcat_aux dst src dst_len maxlen (i + 1)
+let strncat s1 s2 n =
+  let len1 = strlen s1 in
+  let len2 = min (strlen s2) n in
+  let result = Bytes.create (len1 + len2) in
+  copy_string result 0 s1 len1;
+  copy_string result len1 s2 len2;
+  Bytes.unsafe_to_string result
 
 let strlcat dst src maxlen =
-   let dst_len = min (strlen dst) maxlen in
-   let result = Bytes.create maxlen in
-   let _ = copy_string result 0 dst dst_len 0 in
-   strlcat_aux result src dst_len maxlen 0
+  let dst_len = min (strlen dst) maxlen in
+  let src_len = strlen src in
+  let available = maxlen - dst_len in
+  if available <= 0 then dst_len + src_len
+  else begin
+    let to_copy = min available (src_len + 1) in
+    let result = Bytes.create maxlen in
+    copy_string result 0 dst dst_len;
+    copy_string result dst_len src (to_copy - 1);
+    Bytes.unsafe_set result (dst_len + to_copy - 1) '\000';
+    dst_len + src_len
+  end
 
-let rec strnchr_aux s i count c = 
-   match i, count with
-   | _, 0 -> None
-   | i, _ when i >= String.length s -> None
-   | i, count -> match s.[i] with
-      | '\000' -> None
-      | ch when ch = c -> Some (String.sub s i (min count (String.length s - i)))
-      | _ -> strnchr_aux s (i + 1) (count - 1) c
-
-let strnchr s count c = strnchr_aux s 0 count (Char.chr c)
-
-let rec strnstr_check_match s1 s2 i l2 =
-   match l2 with
-   | j when j <= 0 -> true
-   | j -> match s1.[i + j - 1] = s2.[j - 1] with
-      | false -> false
-      | true -> strnstr_check_match s1 s2 i (j - 1)
-
-let rec strnstr_aux s1 s2 len i =
-   let l2 = strlen s2 in
-   match l2, len with
-   | 0, _ -> Some s1
-   | l2, len when l2 > len -> None
-   | l2, len when i > len - l2 -> None
-   | l2, _ -> match strnstr_check_match s1 s2 i l2 with
-      | true -> Some (String.sub s1 i (String.length s1 - i))
-      | false -> strnstr_aux s1 s2 len (i + 1)
-
-let strnstr s1 s2 len = strnstr_aux s1 s2 len 0
+let strnchr s count c =
+  let c = Char.chr (c land 0xFF) in
+  let len = min (String.length s) count in
+  let rec find i =
+    if i >= len then None
+    else
+      let curr = String.unsafe_get s i in
+      if curr = '\000' then None
+      else if curr = c then Some (String.sub s i (len - i))
+      else find (i + 1)
+  in find 0;;
